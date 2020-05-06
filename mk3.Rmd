@@ -1,0 +1,384 @@
+---
+title: "Lyric mood identifier"
+author: "jojoecp"
+date: "5/4/2020"
+output:
+  html_document:
+   toc: true
+   toc_float: true
+   toc_depth: 2
+   theme: flatly
+   highlight: zenburn
+   df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      fig.align = "center")
+
+options(scipen = 999)
+```
+
+Music is not only able to affect your mood -- listening to particularly happy or sad music can even change the way we perceive the world, according to researchers from the University of Groningen. In this modern world we have an ability to choose what music we want to listen easily. Some music player platform such as `Spotify` are known to its music recommender system. where they recommend music based on their customer historical or genre preferences individually. It will be a new idea if music can be enjoyed by its lyric and will get recommendations based on the mood of the lyrics.
+![](68f.jpg)
+
+# Background {.tabset}
+## Objective
+This project is based on [this kaggle dataset](https://www.kaggle.com/edenbd/150k-lyrics-labeled-with-spotify-valence). The dataset contains 250k lyric with Valence value gathered using Spotify API. Valence is A measure from 0.0 to 1.0 describing the musical positiveness conveyed by a track. Tracks with high valence sound more positive (e.g. happy, cheerful, euphoric), while tracks with low valence sound more negative (e.g. sad, depressed, angry). Our task in this article is to **perform supervised NLP sentiment analysis to measure the positiveness of a song.** This kind of analysis can be used for the Spotify company itself to improve its music recommender system based on lyric (words).
+
+Limitation: Languange are wide and complex. NLP are also known to its high computational value. So in this analysis i will only use english song lyrics and sampled the data to only 45k songs.    
+
+## Libraries
+You can load the package into your workspace using the `library()` function
+
+```{r warning=FALSE, message=FALSE}
+library(dplyr)
+library(tidytext)
+library(textclean)
+library(tm)
+library(SnowballC)
+library(stringr)
+library(rsample)
+library(cld2)
+library(caret)
+library(e1071)
+library(tidymodels)
+```
+
+# Let's begin
+## Data Import
+```{r}
+dat <- read.csv("labeled_lyrics_cleaned.csv")
+glimpse(dat)
+```
+
+# Data Wrangling
+## Feature Engineering
+```{r}
+head(dat$seq,1)
+```
+
+The lyrics are stored in seq coloumn. as you can see it will need a lot of treatment before modeling. The simplest thing we can do first is to remove "\ n" as its new line break. The target column (label) still in numeric format. as i said before, higher valence (label) value means the songs are considered as positive mood and lower valence means negative mood. I'll convert the valence value to binary value labeled `positive` and `negative` with 0.5 as center value. I also want to filter english only lyrics to perform the NLP easier. I'll use function from `cld2` package to detect the lyric languange. 
+
+```{r}
+dat$seq <- str_replace_all(as.character(dat$seq), "\n"," ")
+# valence with > 0.5 will labelled as potiive, < 0.5 negative
+dat$mood <- ifelse(dat$label > 0.5, "positive","negative")
+dat$lang <- cld2::detect_language(dat$seq)
+# filter the data to english lyric only
+dat <- dat[dat$lang == "en",]
+```
+
+let's see how our data has changed
+```{r}
+head(dat)
+```
+
+Next, due to my machine limitation, i only use 45k songs for analysis. the songs are selected from random sampling
+```{r}
+set.seed(1502)
+# only select data with complete information
+dat <- dat[complete.cases(dat),]
+dat <- dat[sample(nrow(dat),45000),]
+```
+
+# Text cleaning
+## `textclean` x `stringr` x `tm`
+in text cleaning, i'm more familiar with `tm` and `stringr` package but i also want to learn `textclean` (from tidytext) magic. i'll use both package to clean my text data before modeling
+
+```{r}
+dat <- dat %>%
+  mutate(text_clean = seq %>%  # select seq column
+           str_to_lower() %>%  # convert all the string to low alphabet
+           replace_contraction() %>% # replace contraction to their multi-word forms
+           replace_internet_slang() %>% # replace internet slang to normal words
+           replace_word_elongation() %>% # reolace informal writing with known semantic replacements
+           replace_number(remove = T) %>% # remove number
+           replace_date(replacement = "") %>% # remove date
+           str_remove_all(pattern = "[[:punct:]]") %>% # remove punctuation
+           str_squish() %>% # reduces repeated whitespace inside a string.
+           str_trim() # removes whitespace from start and end of string
+         )
+
+```
+
+```{r}
+# convert text data to corpus using tm package then do tokenize
+corp <- VCorpus(VectorSource(dat$text_clean))
+
+corp_dtm <- corp %>% 
+  # use pre-build english stopwords
+  tm_map(removeWords, stopwords("en")) %>%
+  tm_map(stemDocument) %>%
+  # convert corpus to document term matrix
+  DocumentTermMatrix()
+```
+
+Next i want to limit the number of word to be used in modeling. i'll only choose words that appear in 850 songs
+```{r}
+freq_term <- findFreqTerms(corp_dtm, 850)
+# 815 words are selected
+dat.dtm <- corp_dtm[,freq_term]
+```
+
+
+# Modeling
+## Naive Bayes
+Modeling using NB need special treatment in the train data. the column represents words and each row represents one single song. NB doesnt need the exact number of each words, it only need to know if the words are present in the song or not. thus, we convert the value in each cell to contain either 1 or 0. 1 means this specific word is present in the song, 0 means not present.
+
+```{r}
+# split the data. 75% for train data, and 25% for test data
+set.seed(1502)
+index <- sample(1:nrow(dat.dtm), 0.75*nrow(dat.dtm))
+
+train_x <- dat.dtm[index,]
+test_x <- dat.dtm[-index,]
+# subset label/target variable
+train_label <- dat[index,"mood"]
+test_label <- dat[-index,"mood"]
+```
+
+Use bernoulli converter to convert any value above 0 to 1 and 0 to remain 0.
+```{r}
+# bernoulli conv 
+bernoulli_conv <- function(x){
+  x <- as.factor(as.numeric(x>0))
+}
+```
+
+apply bernoulli converter to train and test data
+```{r}
+train_x <- apply(train_x,2,bernoulli_conv)
+test_x <- apply(test_x,2,bernoulli_conv)
+```
+
+0 in a cell indicates the song doesn't have a particular word. it also means that corresponding class-feature combination has a 0 probability of occuring. it will ruin the NB algorithm which computes the conditional a-posterior probabilities of a categorical class variable given independent predictor variables using the Bayes rule. We could specify laplace=1 to enable an add-one smoothing.
+
+```{r}
+# train the model
+mod.nb <- naiveBayes(train_x, as.factor(train_label), laplace = 1)
+# predict to test data
+pred.nb <- predict(mod.nb, test_x,
+                   type = "class")
+
+pred.nb.x <- cbind(data.frame(pred.nb),test_label)%>%
+  setNames(c("pred","actual"))
+```
+
+create confusion matrix for later evaluation
+```{r}
+cf.nb <- confusionMatrix(data = pred.nb.x$pred,
+                         reference = pred.nb.x$actual,
+                         positive = "positive")
+cf.nb
+```
+
+## Decision Tree
+Next we will build another model using different algorithm. we will use Decision tree and MARS. but before that, we need to make data frame with cleaned data. The token value will not be converted to 1 or 0 like naive bayes. it'll remain original.
+
+```{r}
+dat.clean <- as.data.frame(as.matrix(dat.dtm), stringsAsFactors = F)
+# we have 800+ variable in words form. i change the label name from `mood` to labelY to avoid overwriting column names
+new.dat <- cbind(dat.clean, data.frame(labelY = dat$mood))
+```
+
+splitting
+```{r}
+set.seed(1502)
+splitter <- initial_split(new.dat, prop = 0.75, strata = "labelY")
+train <- training(splitter)
+test <- testing(splitter)
+```
+
+```{r}
+mod.dt <- decision_tree(mode = "classification") %>%
+  set_engine("rpart") %>% fit(labelY~., data = train)
+
+pred.dt <- predict(mod.dt, test, 
+                   type = "class")
+
+pred.dt.x <- as.data.frame(cbind(pred.dt, test$labelY)) %>%
+  setNames(c("pred","actual"))
+
+pred.dt.x
+```
+create confusion matrix for later evaluation
+```{r}
+cf.dt <- confusionMatrix(data = pred.dt.x$pred,
+                         reference = pred.dt.x$actual,
+                         positive = "positive")
+cf.dt
+```
+
+## Mars
+next we build 3rd model using MARS algorithm
+```{r}
+mod.mars <- mars(mode = "classification") %>%
+  set_engine("earth") %>% fit(labelY~., data = train)
+
+pred.mars <- predict(mod.mars, test, 
+                   type = "class")
+
+pred.mars.x <- as.data.frame(cbind(pred.mars, test$labelY)) %>%
+  setNames(c("pred","actual"))
+
+pred.mars.x
+
+```
+
+create confusion matrix for later use
+```{r}
+cf.mars <- confusionMatrix(data = pred.mars.x$pred,
+                         reference = pred.mars.x$actual,
+                         positive = "positive")
+cf.mars
+```
+
+# Model Evaluation and conclusion
+Let's combine all the confusion matrix to make the evaluation easier
+```{r}
+df.nb <- data.frame(t(as.matrix(cf.nb, what = "classes")))
+df.nb <- cbind(df.nb, data.frame(t(as.matrix(cf.nb,what = "overall"))))
+
+df.dt <- data.frame(t(as.matrix(cf.dt, what = "classes")))
+df.dt <- cbind(df.dt, data.frame(t(as.matrix(cf.dt,what = "overall"))))
+
+df.mars <- data.frame(t(as.matrix(cf.mars, what = "classes")))
+df.mars <- cbind(df.mars, data.frame(t(as.matrix(cf.mars,what = "overall"))))
+
+all.eval <- rbind(Naive_Bayes = df.nb, 
+                  Decision_Tree = df.dt,
+                  Mars = df.mars) %>%
+  select("Accuracy","Sensitivity","Specificity","Precision","F1") %>% data.frame()
+
+all.eval
+```
+
+Since there's no urgenity in this case, we will choose Accuracy as our high-priority metric to solve the case. User can easily remove or skip if they dont like the recommended songs and it will not affect our operational cost. Positive song in sad song playlist will not harm anyone but its better if we try avoid it.   
+
+As we can see from the table above, `Naive Bayes` model has the highest Accuracy. It’ll always possible to have higher accuracy (or other metrics) if we try another classification model. We’ll do that in the future. So in conclusion, **we'll use Naive Bayes model to predict song's mood based on its lyric.**
+
+
+# Predicting new lyric outside train and test data
+we only cover approximately 45k songs. there's thousand if not million songs worldwide and it's such a shame if we can predict the mood given the song's lyric. so here we will try to build a function to suit a plain new lyric text into our model. The data will be cleaned up automaitcaly before we predict their mood.
+
+here i will use a song from One Piece OST opening 3 titled 'hikari e' (to the light). the song is originally japanese but i translate it to match our builded model.
+
+```{r}
+# new text lyric
+text <- "I've just now begun to search, over the splashing waves
+For the everlasting world
+With this overflowing passion in my chest, I will go anywhere
+Seeking the light yet unseen. 
+
+When  the summer sun shakes my heart's sail
+That's the signal to open the door to a new world
+Swaying on the waves, supassing my despair
+Aiming for the other side of the horizon. 
+
+I've just now begun to search, over the splashing waves,
+For the everlasting world
+With this overflowing passion in my chest, I will go anywhere,
+Seeking the light yet unseen. 
+
+A current of repetitious days and mundane clouds
+I see reflected in you a future you can't possibly know
+Even if I avoid pain by not changing
+That leaves me without dreams or even hope -- so let's go!. 
+
+Why am I searching?  What is it I want?
+The answer is surely somewhere ahead
+My heart will go on to the moving world
+Hiding my yet unseen strength. 
+
+Why am I searching?  What is it I want?
+Where is the yet unseen treasure?
+With this overflowing passion in my chest, how far can I go?
+I don't know, but 
+
+I've just now begun to search, over the splashing waves,
+For the everlasting world
+With this overflowing passion in my chest, I will go anywhere,
+Seeking the light yet unseen
+
+To the other side"
+```
+
+here's the function. its just all the cleaning step combined into one function and build new data frame as the output. it also matching words as predictor variable to required column names (word in this case) in train data.
+```{r}
+textcleaner <- function(x){
+  x <- as.character(x)
+  
+  x <- x %>%
+    str_to_lower() %>%
+    replace_contraction() %>%
+    replace_internet_slang() %>%
+    replace_word_elongation() %>%
+    replace_number(remove = T) %>%
+    replace_date(replacement = "") %>%
+    str_remove_all(pattern = "[[:punct:]]") %>%
+    str_squish() %>%
+    str_trim()
+  
+  xdtm <- VCorpus(VectorSource(x)) %>%
+    tm_map(removeWords, stopwords("en")) %>%
+    tm_map(stemDocument) %>% 
+    DocumentTermMatrix(control = list(
+      dictionary = names(train)
+    ))
+  
+  dfx <- as.data.frame(as.matrix(xdtm), stringAsFactors=F)
+    
+}
+```
+
+let's predict the mood using mars model
+```{r}
+samptext <- textcleaner(text)
+
+predict(mod.mars,samptext)
+```
+Our Mars model predict it as negative mood music.   
+
+Our best model is actually Naive Bayes. we'll also build function to clean up the text and matching it to Naive Bayes requirement. the only different is in the last step we apply benoulli converter and return it as transposed matrix.
+
+```{r}
+textcleaner_nb <- function(x){
+  x <- as.character(x)
+  
+  x <- x %>%
+    str_to_lower() %>%
+    replace_contraction() %>%
+    replace_internet_slang() %>%
+    replace_word_elongation() %>%
+    replace_number(remove = T) %>%
+    replace_date(replacement = "") %>%
+    str_remove_all(pattern = "[[:punct:]]") %>%
+    str_squish() %>%
+    str_trim()
+  
+  xdtm <- VCorpus(VectorSource(x)) %>%
+    tm_map(removeWords, stopwords("en")) %>%
+    tm_map(stemDocument) %>% 
+    DocumentTermMatrix(control = list(
+      dictionary = names(train)
+    ))
+  
+  dfx <- as.data.frame(as.matrix(xdtm), stringAsFactors=F)
+  
+  dfx <- apply(dfx,2,bernoulli_conv)
+
+  return(t(as.matrix(dfx)))    
+}
+```
+
+Predict the lyrics using naive bayes model
+```{r}
+samptext_nb <- textcleaner_nb(text)
+
+predict(mod.nb,samptext_nb, type = "class")
+```
+Naive Bayes Model are also predict the lyric as negative mood music. if you hear the real song, its actually a spirit, energic, and positive mood music but i never know what is the lyrics actually say.
+
+
+
