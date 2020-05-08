@@ -19,7 +19,7 @@ knitr::opts_chunk$set(echo = TRUE,
 options(scipen = 999)
 ```
 
-Music is not only able to affect your mood -- listening to particularly happy or sad music can even change the way we perceive the world, according to researchers from the University of Groningen. In this modern world we have an ability to choose what music we want to listen easily. Some music player platform such as `Spotify` are known to its music recommender system. where they recommend music based on their customer historical or genre preferences individually. It will be a new idea if music can be enjoyed by its lyric and will get recommendations based on the mood of the lyrics.
+Music is not only able to affect your mood. listening to particularly happy or sad music can even change the way we perceive the world, according to researchers from the University of Groningen. In this modern world we have an ability to choose what music we want to listen easily. Some music player platform such as `Spotify` are known to its music recommender system. where they recommend music based on their customer historical or genre preferences individually. It will be a new idea if music can be enjoyed by its lyric and will get recommendations based on the mood of the lyrics.
 ![](68f.jpg)
 
 # Background {.tabset}
@@ -174,7 +174,7 @@ cf.nb
 ```
 
 ## Decision Tree
-Next we will build another model using different algorithm. we will use Decision tree and MARS. but before that, we need to make data frame with cleaned data. The token value will not be converted to 1 or 0 like naive bayes. it'll remain original.
+Next we will build another model using different algorithm. we will use Decision tree, MARS, and Random Forest. but before that, we need to make data frame with cleaned data. The token value will not be converted to 1 or 0 like naive bayes. it'll remain original.
 
 ```{r}
 dat.clean <- as.data.frame(as.matrix(dat.dtm), stringsAsFactors = F)
@@ -234,22 +234,44 @@ cf.mars <- confusionMatrix(data = pred.mars.x$pred,
 cf.mars
 ```
 
-# Model Tuning
-Sadly i'm not satisfy about the result. the highest Accuracy only 62.6%. i will try to tune some models in hope we can get better result
-
 ```{r}
-# build 5 folds cross validation for tuning evaluationn
-## the column names like break,for,next,if are considered as special character thus raises an eror when tuning.
+# this chunks are made for random forest model and future model tuning
+## the column names like break,for,next,if are considered as special character thus raises an error when building random forest and model tuning.
 ## i store the train and test data to new variabel so the old one remain reproducible
 train_tune <- train
 test_tune <- test
 
 colnames(train_tune) <- make.names(colnames(train_tune))
 colnames(test_tune) <- make.names(colnames(test_tune))
+
+# build 5 folds cross validation for tuning evaluationn
 set.seed(1502)
 folds <- vfold_cv(train_tune, 3)
 ```
 
+## Random Forest
+```{r}
+mod.rf <- rand_forest(trees = 500, mtry = 5, mode = "classification") %>%
+  set_engine("ranger") %>% fit(labelY~., data = train_tune)
+
+pred.rf <- predict(mod.rf, test_tune, 
+                   type = "class")
+
+pred.rf.x <- as.data.frame(cbind(pred.rf, test_tune$labelY)) %>%
+  setNames(c("pred","actual"))
+
+pred.rf.x
+```
+create confusion matrix for later use
+```{r}
+cf.rf <- confusionMatrix(data = pred.rf.x$pred,
+                         reference = pred.rf.x$actual,
+                         positive = "positive")
+cf.rf
+```
+
+# Model Tuning
+Sadly i'm not satisfy about the result. the highest Accuracy only 66.75%. i will try to tune some models in hope we can get better result
 
 ## Decision Tree
 in decision tree we can do some parameter tuning like `cost_complexity`, `tree_depth`, and `min_n`. This time, we will do a grid tuning for tree_depth and min_n by given number. we'll do the grid search 5 times with 3 k-fold cross validation
@@ -285,12 +307,12 @@ The grid tuning really takes a lot of time. My pc RAM can't even load this noteb
 # mod.dt.2x <- mod.dt.2 %>% fit(labelY~., data = train)
 
 mod.dt.2x <- decision_tree(mode = "classification",
-                           cost_complexity = 0.01,tree_depth = 23,min_n = 20) %>%
+                           tree_depth = 23, min_n = 20, cost_complexity = 0.01) %>%
   set_engine("rpart") %>% fit(labelY~., data = train_tune)
 ```
 
 ```{r}
-# predicti new model to unseen data
+# predict new model to unseen data
 pred.dt.2 <- predict(mod.dt.2x, test_tune, 
                    type = "class")
 
@@ -308,6 +330,56 @@ cf.dt.2 <- confusionMatrix(data = pred.dt.2.x$pred,
 cf.dt.2
 ```
 
+## Random Forest
+in Random Forest we can do some parameter tuning like `trees`,and `mtry`. This time, we will do a grid tuning for number of trees and mtry by given number. we'll do the grid search 4 times with 3 k-fold cross validation.
+```{r}
+rf.grid <- expand.grid(trees = c(450,500,550,600), mtry = 3:6)
+
+rf.setup <- rand_forest(trees = tune(), mtry = tune()) %>%
+  set_engine("ranger") %>%
+  set_mode("classification")
+
+# this tuning also takes a lot of time. 
+# rf.tune <- tune_grid(labelY~., model = rf.setup, resamples = folds,
+#                      grid = rf.grid, metrics = metric_set(accuracy, sens, spec))
+
+```
+
+The tuning take a lots of time. the parameter for best results are mtry = 6 and trees = 550. here's i show you the code but for time efficiency ill exclude it and load the pre-build model instead
+```{r}
+# best.rfX <- rf.tune %>% select_best("accuracy", maximize = F)
+# # the best parameter for highest reacall are mtry = 6 and trees = 550
+# mod.rf.2X <- rf.setup %>% finalize_model(parameters = 
+#                                           best.rfX)
+# # rebuild the model
+# mod.rf.2.new <- mod.rf.2X %>% fit(labelY~., data = train_tune)
+```
+
+```{r}
+# load pre-build rf tuned model
+mod.rf.2.x <- readRDS("rf_mod_tuned.rds")
+```
+
+```{r}
+# predict new model to unseen data
+pred.rf.2 <- predict(mod.rf.2.x, test_tune, 
+                   type = "class")
+
+pred.rf.2.x <- as.data.frame(cbind(pred.rf.2, test_tune$labelY)) %>%
+  setNames(c("pred","actual"))
+
+pred.rf.2.x
+```
+
+build confusion matrix for evaluating
+```{r}
+cf.rf.2 <- confusionMatrix(data = pred.rf.2.x$pred,
+                         reference = pred.rf.2.x$actual,
+                         positive = "positive")
+cf.rf.2
+```
+
+We've got verry little improvement from accuracy 66.7 to 66.9
 
 # Model Evaluation and conclusion
 Let's combine all the confusion matrix to make the evaluation easier
@@ -321,13 +393,21 @@ df.dt <- cbind(df.dt, data.frame(t(as.matrix(cf.dt,what = "overall"))))
 df.mars <- data.frame(t(as.matrix(cf.mars, what = "classes")))
 df.mars <- cbind(df.mars, data.frame(t(as.matrix(cf.mars,what = "overall"))))
 
+df.rf <- data.frame(t(as.matrix(cf.rf, what = "classes")))
+df.rf <- cbind(df.rf, data.frame(t(as.matrix(cf.rf,what = "overall"))))
+
 df.dt.2 <- data.frame(t(as.matrix(cf.dt.2, what = "classes")))
 df.dt.2 <- cbind(df.dt.2, data.frame(t(as.matrix(cf.dt.2,what = "overall"))))
+
+df.rf.2 <- data.frame(t(as.matrix(cf.rf.2, what = "classes")))
+df.rf.2 <- cbind(df.rf.2, data.frame(t(as.matrix(cf.rf.2,what = "overall"))))
 
 all.eval <- rbind(Naive_Bayes = df.nb, 
                   Decision_Tree = df.dt,
                   Mars = df.mars,
-                  Decision_Tree_tuned = df.dt.2) %>%
+                  Random_Forest = df.rf,
+                  Decision_Tree_tuned = df.dt.2,
+                  Random_Forest_tuned = df.rf.2) %>%
   select("Accuracy","Sensitivity","Specificity","Precision","F1") %>% data.frame()
 
 all.eval
@@ -335,7 +415,7 @@ all.eval
 
 Since there's no urgenity in this case, we will choose Accuracy as our high-priority metric to solve the case. User can easily remove or skip if they dont like the recommended songs and it will not affect our operational cost. Positive song in sad song playlist will not harm anyone but its better if we try avoid it.   
 
-As we can see from the table above, `Naive Bayes` model has the highest Accuracy. Our tuned decision tree doesn't even give any different. It’ll always possible to have higher accuracy (or other metrics) if we try another classification model. We’ll do that in the future. So in conclusion, **we'll use Naive Bayes model to predict song's mood based on its lyric.**
+As we can see from the table above, `Random Forest tuned` model has the highest Accuracy. It’ll always possible to have higher accuracy (or other metrics) if we try another classification model. We’ll do that in the future. So in conclusion, **we'll use Random Forest model to predict song's mood based on its lyric.**
 
 
 # Predicting new given lyric
@@ -383,6 +463,8 @@ Seeking the light yet unseen
 To the other side"
 ```
 
+## Model type_1
+
 here's the function. its just all the cleaning step combined into one function and build new data frame as the output. it also matching words as predictor variable to required column names (word in this case) in train data.
 ```{r}
 textcleaner <- function(x){
@@ -419,7 +501,46 @@ predict(mod.mars,samptext)
 ```
 Our Mars model predict it as negative mood music.   
 
-Our best model is actually Naive Bayes. we'll also build function to clean up the text and matching it to Naive Bayes requirement. the only different is in the last step we apply benoulli converter and return it as transposed matrix.
+## Model type_2
+
+Random forest algorithm can't copy special character column names like for,breaks,and next so we build a different function for it. the difference is only in dictionary names its follow the modified column names in train_tune and test_tune
+```{r}
+textcleaner_2 <- function(x){
+  x <- as.character(x)
+  
+  x <- x %>%
+    str_to_lower() %>%
+    replace_contraction() %>%
+    replace_internet_slang() %>%
+    replace_word_elongation() %>%
+    replace_number(remove = T) %>%
+    replace_date(replacement = "") %>%
+    str_remove_all(pattern = "[[:punct:]]") %>%
+    str_squish() %>%
+    str_trim()
+  
+  xdtm <- VCorpus(VectorSource(x)) %>%
+    tm_map(removeWords, stopwords("en")) %>%
+    tm_map(stemDocument) %>% 
+    DocumentTermMatrix(control = list(
+      dictionary = names(train_tune)
+    ))
+  
+  dfx <- as.data.frame(as.matrix(xdtm), stringAsFactors=F)
+    
+}
+```
+
+```{r}
+samptext_2 <- textcleaner_2(text)
+
+predict(mod.rf.2.x,samptext_2)
+```
+The random forest model (best model in this case) also predict the lyric as negative-mood song.
+
+## Naive Bayes
+
+we've different format for Naive Bayes. we'll also build function to clean up the text and matching it to Naive Bayes requirement. the only different is in the last step we apply benoulli converter and return it as transposed matrix.
 
 ```{r}
 textcleaner_nb <- function(x){
@@ -457,7 +578,9 @@ samptext_nb <- textcleaner_nb(text)
 
 predict(mod.nb,samptext_nb, type = "class")
 ```
-Naive Bayes Model are also predict the lyric as negative mood music. if you hear the real song, its actually a spirit, energic, and positive mood music but i never know what is the lyrics actually say.
+Naive Bayes Model are also predict the lyric as negative mood music. if you hear the real song, its actually a spirit, energic, and positive mood music but i never know what's the lyrics actually say.   
+
+thank you!   
 
 
 
