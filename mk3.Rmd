@@ -234,6 +234,81 @@ cf.mars <- confusionMatrix(data = pred.mars.x$pred,
 cf.mars
 ```
 
+# Model Tuning
+Sadly i'm not satisfy about the result. the highest Accuracy only 62.6%. i will try to tune some models in hope we can get better result
+
+```{r}
+# build 5 folds cross validation for tuning evaluationn
+## the column names like break,for,next,if are considered as special character thus raises an eror when tuning.
+## i store the train and test data to new variabel so the old one remain reproducible
+train_tune <- train
+test_tune <- test
+
+colnames(train_tune) <- make.names(colnames(train_tune))
+colnames(test_tune) <- make.names(colnames(test_tune))
+set.seed(1502)
+folds <- vfold_cv(train_tune, 3)
+```
+
+
+## Decision Tree
+in decision tree we can do some parameter tuning like `cost_complexity`, `tree_depth`, and `min_n`. This time, we will do a grid tuning for tree_depth and min_n by given number. we'll do the grid search 5 times with 3 k-fold cross validation
+
+```{r}
+# create the grid. the tune will build models using combination of randomized cost_complexity, tree_depth, and min_n from grid_max_entropy function
+dt.grid <- expand.grid(tree_depth = c(23,25,27,29,30), min_n = c(20,21,22,23,24))
+
+dt.setup <- decision_tree(min_n = tune(), tree_depth = tune(), cost_complexity = 0.01) %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+# dt.tune <- tune_grid(labelY~., model = dt.setup, grid = dt.grid, resamples = folds,
+#                      metrics = metric_set(accuracy, spec, sens))
+
+```
+The grid tuning really takes a lot of time. My pc RAM can't even load this notebook before i clean the rhistory and environment. So i can't save the output but i ensure you the best parameters are tree_depth = 23 and min_n = 20.
+
+```{r}
+#show_best(dt.tune, maximize = F, metric = "accuracy")
+```
+
+
+```{r}
+# select the best parameters and apply to new model
+# best.dt <- dt.tune %>% select_best("accuracy", maximize = F)
+# 
+# # The best parameters for highest accuract are tree_depth = 23, min_n =20
+# mod.dt.2 <- dt.setup %>% finalize_model(parameters = 
+#                                           best.dt)
+
+# build new model using the best tuned parameters
+# mod.dt.2x <- mod.dt.2 %>% fit(labelY~., data = train)
+
+mod.dt.2x <- decision_tree(mode = "classification",
+                           cost_complexity = 0.01,tree_depth = 23,min_n = 20) %>%
+  set_engine("rpart") %>% fit(labelY~., data = train_tune)
+```
+
+```{r}
+# predicti new model to unseen data
+pred.dt.2 <- predict(mod.dt.2x, test_tune, 
+                   type = "class")
+
+pred.dt.2.x <- as.data.frame(cbind(pred.dt.2, test_tune$labelY)) %>%
+  setNames(c("pred","actual"))
+
+pred.dt.2.x
+```
+
+
+```{r}
+cf.dt.2 <- confusionMatrix(data = pred.dt.2.x$pred,
+                         reference = pred.dt.2.x$actual,
+                         positive = "positive")
+cf.dt.2
+```
+
+
 # Model Evaluation and conclusion
 Let's combine all the confusion matrix to make the evaluation easier
 ```{r}
@@ -246,9 +321,13 @@ df.dt <- cbind(df.dt, data.frame(t(as.matrix(cf.dt,what = "overall"))))
 df.mars <- data.frame(t(as.matrix(cf.mars, what = "classes")))
 df.mars <- cbind(df.mars, data.frame(t(as.matrix(cf.mars,what = "overall"))))
 
+df.dt.2 <- data.frame(t(as.matrix(cf.dt.2, what = "classes")))
+df.dt.2 <- cbind(df.dt.2, data.frame(t(as.matrix(cf.dt.2,what = "overall"))))
+
 all.eval <- rbind(Naive_Bayes = df.nb, 
                   Decision_Tree = df.dt,
-                  Mars = df.mars) %>%
+                  Mars = df.mars,
+                  Decision_Tree_tuned = df.dt.2) %>%
   select("Accuracy","Sensitivity","Specificity","Precision","F1") %>% data.frame()
 
 all.eval
@@ -256,10 +335,10 @@ all.eval
 
 Since there's no urgenity in this case, we will choose Accuracy as our high-priority metric to solve the case. User can easily remove or skip if they dont like the recommended songs and it will not affect our operational cost. Positive song in sad song playlist will not harm anyone but its better if we try avoid it.   
 
-As we can see from the table above, `Naive Bayes` model has the highest Accuracy. It’ll always possible to have higher accuracy (or other metrics) if we try another classification model. We’ll do that in the future. So in conclusion, **we'll use Naive Bayes model to predict song's mood based on its lyric.**
+As we can see from the table above, `Naive Bayes` model has the highest Accuracy. Our tuned decision tree doesn't even give any different. It’ll always possible to have higher accuracy (or other metrics) if we try another classification model. We’ll do that in the future. So in conclusion, **we'll use Naive Bayes model to predict song's mood based on its lyric.**
 
 
-# Predicting new lyric outside train and test data
+# Predicting new given lyric
 we only cover approximately 45k songs. there's thousand if not million songs worldwide and it's such a shame if we can predict the mood given the song's lyric. so here we will try to build a function to suit a plain new lyric text into our model. The data will be cleaned up automaitcaly before we predict their mood.
 
 here i will use a song from One Piece OST opening 3 titled 'hikari e' (to the light). the song is originally japanese but i translate it to match our builded model.
